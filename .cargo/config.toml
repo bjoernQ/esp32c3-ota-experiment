@@ -1,0 +1,12 @@
+[target.riscv32imac-unknown-none-elf]
+runner = "espflash --speed 921600 --bootloader bootloader.bin --partition-table partitions.csv --monitor"
+
+[build]
+rustflags = [
+  "-C", "link-arg=-Tlinkall.x",
+  "-C", "link-arg=-Tesp32c3_rom_functions.x",
+]
+target = "riscv32imac-unknown-none-elf"
+
+[unstable]
+build-std = ["core", "alloc"]
