@@ -5,14 +5,14 @@ use embedded_svc::wifi::{
     ClientConfiguration, ClientConnectionStatus, ClientIpStatus, ClientStatus, Configuration,
     Status, Wifi,
 };
-use esp32c3_hal::RtcCntl;
+use esp32c3_hal::clock::{ClockControl, CpuClock};
+use esp32c3_hal::system::SystemExt;
+use esp32c3_hal::{pac::Peripherals, prelude::*, Rtc};
 use esp_println::println;
-use esp_wifi::wifi::initialize;
 use esp_wifi::wifi::utils::create_network_interface;
 use esp_wifi::wifi_interface::timestamp;
 use esp_wifi::{create_network_stack_storage, network_stack_storage};
 
-use esp32c3_hal::pac::Peripherals;
 use esp_backtrace as _;
 use riscv_rt::entry;
 use smoltcp::wire::Ipv4Address;
@@ -34,13 +34,17 @@ const PASSWORD: &str = env!("PASSWORD");
 
 #[entry]
 fn main() -> ! {
-    let mut peripherals = Peripherals::take().unwrap();
+    esp_wifi::init_heap();
 
-    let mut rtc_cntl = RtcCntl::new(peripherals.RTC_CNTL);
+    let peripherals = Peripherals::take().unwrap();
+    let system = peripherals.SYSTEM.split();
+    let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock160MHz).freeze();
+
+    let mut rtc = Rtc::new(peripherals.RTC_CNTL);
 
     // Disable watchdog timers
-    rtc_cntl.set_super_wdt_enable(false);
-    rtc_cntl.set_wdt_enable(false);
+    rtc.swd.disable();
+    rtc.rwdt.disable();
 
     let mut storage = create_network_stack_storage!(3, 8, 1);
     let ethernet = create_network_interface(network_stack_storage!(storage));
@@ -48,12 +52,9 @@ fn main() -> ! {
 
     init_logger();
 
-    initialize(
-        &mut peripherals.SYSTIMER,
-        &mut peripherals.INTERRUPT_CORE0,
-        peripherals.RNG,
-    )
-    .unwrap();
+    use esp32c3_hal::systimer::SystemTimer;
+    let syst = SystemTimer::new(peripherals.SYSTIMER);
+    esp_wifi::initialize(syst.alarm0, peripherals.RNG, &clocks).unwrap();
 
     println!("{:?}", wifi_interface.get_status());
 
