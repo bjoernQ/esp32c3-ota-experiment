@@ -34,3 +34,9 @@ Now it will download `firmware.bin` and flash it. After that it will set the OTA
 
 In this experiment the reset isn't done automatically. Reset the ESP32-C3 and see the new version boot.
 The new version will see there is no later version online to flash.
+
+## Please Note
+
+Make sure to use the provided bootloader and partition table.
+
+i.e. when flashing manually with espflash use `espflash --bootloader bootloader.bin --partition-table partitions.csv`
