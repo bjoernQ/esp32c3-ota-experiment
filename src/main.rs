@@ -28,11 +28,11 @@ mod ota;
 mod tiny_http;
 
 const THIS_VERSION: u32 = 1;
-const HOST: Ipv4Address = Ipv4Address::new(192, 168, 2, 125); // 192.168.2.125 ... change if needed!
 const PORT: u16 = 8080;
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
+const HOST_IP: &str = env!("HOST_IP");
 
 #[entry]
 fn main() -> ! {
@@ -112,7 +112,7 @@ fn main() -> ! {
     let mut rx_buffer = [0u8; 1536];
     let mut tx_buffer = [0u8; 1536];
     let mut socket = wifi_stack.get_socket(&mut rx_buffer, &mut tx_buffer);
-    socket.open(HOST, PORT).unwrap();
+    socket.open(parse_ip(HOST_IP), PORT).unwrap();
     let mut client = HttpClient::new("localhost", socket);
     let mut response = client
         .get::<0, 0>("/current.txt", None, None::<&[&str; 0]>)
@@ -143,7 +143,7 @@ fn main() -> ! {
         };
 
         // do the update
-        socket.open(HOST, PORT).unwrap();
+        socket.open(parse_ip(HOST_IP), PORT).unwrap();
         let mut client = HttpClient::new("localhost", socket);
 
         let mut response = client
@@ -182,4 +182,13 @@ fn main() -> ! {
 
 pub fn current_millis() -> u64 {
     esp_wifi::timer::get_systimer_count() * 1000 / esp_wifi::timer::TICKS_PER_SECOND
+}
+
+fn parse_ip(ip: &str) -> Ipv4Address {
+    let mut result = [0u8; 4];
+    for (idx, octet) in ip.split(".").into_iter().enumerate() {
+        result[idx] = u8::from_str_radix(octet, 10).unwrap();
+    }
+
+    Ipv4Address::from_bytes(&result)
 }
