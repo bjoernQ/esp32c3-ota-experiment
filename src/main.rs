@@ -1,26 +1,28 @@
 #![no_std]
 #![no_main]
 
-use embedded_svc::wifi::{
-    ClientConfiguration, ClientConnectionStatus, ClientIpStatus, ClientStatus, Configuration,
-    Status, Wifi,
-};
+use core::str::from_utf8;
+
+use embedded_svc::ipv4::Interface;
+use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
 use esp32c3_hal::clock::{ClockControl, CpuClock};
-use esp32c3_hal::system::SystemExt;
-use esp32c3_hal::{pac::Peripherals, prelude::*, Rtc};
-use esp_println::println;
+use esp32c3_hal::peripherals::Peripherals;
+use esp32c3_hal::Rtc;
+use esp32c3_hal::{prelude::*, Rng};
+use esp_println::logger::init_logger;
+use esp_println::{print, println};
 use esp_wifi::wifi::utils::create_network_interface;
-use esp_wifi::wifi_interface::timestamp;
-use esp_wifi::{create_network_stack_storage, network_stack_storage};
+use esp_wifi::wifi::WifiMode;
+use esp_wifi::wifi_interface::WifiStack;
 
 use esp_backtrace as _;
-use riscv_rt::entry;
 use smoltcp::wire::Ipv4Address;
 
 use crate::ota::Slot;
-use crate::tiny_http::{Buffer, HttpClient, PollResult};
+use crate::tiny_http::HttpClient;
+use embedded_io::blocking::Read;
 
-extern crate alloc;
+use smoltcp::iface::SocketStorage;
 
 mod ota;
 mod tiny_http;
@@ -34,9 +36,10 @@ const PASSWORD: &str = env!("PASSWORD");
 
 #[entry]
 fn main() -> ! {
+    init_logger(log::LevelFilter::Info);
     esp_wifi::init_heap();
 
-    let peripherals = Peripherals::take().unwrap();
+    let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock160MHz).freeze();
 
@@ -46,17 +49,14 @@ fn main() -> ! {
     rtc.swd.disable();
     rtc.rwdt.disable();
 
-    let mut storage = create_network_stack_storage!(3, 8, 1);
-    let ethernet = create_network_interface(network_stack_storage!(storage));
-    let mut wifi_interface = esp_wifi::wifi_interface::Wifi::new(ethernet);
-
-    init_logger();
+    let mut socket_set_entries: [SocketStorage; 3] = Default::default();
+    let (iface, device, mut controller, sockets) =
+        create_network_interface(WifiMode::Sta, &mut socket_set_entries);
+    let wifi_stack = WifiStack::new(iface, device, sockets, current_millis);
 
     use esp32c3_hal::systimer::SystemTimer;
     let syst = SystemTimer::new(peripherals.SYSTIMER);
-    esp_wifi::initialize(syst.alarm0, peripherals.RNG, &clocks).unwrap();
-
-    println!("{:?}", wifi_interface.get_status());
+    esp_wifi::initialize(syst.alarm0, Rng::new(peripherals.RNG), &clocks).unwrap();
 
     println!("Call wifi_connect");
     let client_config = Configuration::Client(ClientConfiguration {
@@ -64,35 +64,33 @@ fn main() -> ! {
         password: PASSWORD.into(),
         ..Default::default()
     });
-    let res = wifi_interface.set_configuration(&client_config);
-    println!("wifi_connect returned {:?}", res);
+    controller.set_configuration(&client_config).unwrap();
+    controller.start().unwrap();
+    controller.connect().unwrap();
 
-    println!("{:?}", wifi_interface.get_capabilities());
-    println!("{:?}", wifi_interface.get_status());
-
-    // wait to get connected
+    println!("Wait to get connected");
     loop {
-        if let Status(ClientStatus::Started(_), _) = wifi_interface.get_status() {
-            break;
+        let res = controller.is_connected();
+        match res {
+            Ok(connected) => {
+                if connected {
+                    break;
+                }
+            }
+            Err(err) => {
+                println!("{:?}", err);
+                loop {}
+            }
         }
     }
-    println!("{:?}", wifi_interface.get_status());
 
-    // wait to get connected and have an ip
+    // wait for getting an ip address
+    println!("Wait to get an ip address");
     loop {
-        wifi_interface.poll_dhcp().unwrap();
+        wifi_stack.work();
 
-        wifi_interface
-            .network_interface()
-            .poll(timestamp())
-            .unwrap();
-
-        if let Status(
-            ClientStatus::Started(ClientConnectionStatus::Connected(ClientIpStatus::Done(config))),
-            _,
-        ) = wifi_interface.get_status()
-        {
-            println!("got ip {:?}", config);
+        if wifi_stack.is_iface_up() {
+            println!("got ip {:?}", wifi_stack.get_ip_info());
             break;
         }
     }
@@ -111,32 +109,19 @@ fn main() -> ! {
         Slot::Slot1
     };
 
-    let mut client = Some(HttpClient::new(wifi_interface, current_millis));
+    let mut rx_buffer = [0u8; 1536];
+    let mut tx_buffer = [0u8; 1536];
+    let mut socket = wifi_stack.get_socket(&mut rx_buffer, &mut tx_buffer);
+    socket.open(HOST, PORT).unwrap();
+    let mut client = HttpClient::new("localhost", socket);
+    let mut response = client
+        .get::<0, 0>("/current.txt", None, None::<&[&str; 0]>)
+        .unwrap();
+    let mut buffer = [0u8; 128];
+    let len = response.read(&mut buffer).unwrap();
 
-    let mut response = client.unwrap().get(HOST, PORT, "/current.txt", "localhost");
-
-    let mut response_data: Buffer<1024> = Buffer::new();
-
-    loop {
-        let res = response.poll();
-
-        match res {
-            PollResult::None => (),
-            PollResult::Data(buffer) => {
-                response_data.push(buffer.slice());
-            }
-            PollResult::Done => {
-                client = Some(response.finalize());
-                break;
-            }
-            PollResult::Err => {
-                println!("Ooops some error occured!");
-            }
-        }
-    }
-
-    let version_str = response_data.next_line().unwrap();
-    println!("Update firmware version {}", version_str);
+    let version_str = from_utf8(&buffer[..len]).unwrap().trim();
+    println!("Update firmware version '{}'", version_str);
 
     let version: u32 = version_str.parse().unwrap();
     println!(
@@ -144,8 +129,12 @@ fn main() -> ! {
         version, THIS_VERSION
     );
 
+    response.finish();
+    let mut socket = client.finish();
+    socket.disconnect();
+
     if version > THIS_VERSION {
-        println!("going to update");
+        println!("Going to update");
 
         let mut flash_addr = if new_slot == Slot::Slot0 {
             0x110000
@@ -154,60 +143,35 @@ fn main() -> ! {
         };
 
         // do the update
-        let mut response = client
-            .unwrap()
-            .get(HOST, PORT, "/firmware.bin", "localhost");
+        socket.open(HOST, PORT).unwrap();
+        let mut client = HttpClient::new("localhost", socket);
 
-        let mut response_data: Buffer<4096> = Buffer::new(); // one sector
+        let mut response = client
+            .get::<0, 0>("/firmware.bin", None, None::<&[&str; 0]>)
+            .unwrap();
+
+        let mut response_data = [0u8; 4096]; // max one sector
         loop {
-            let res = response.poll();
+            let res = response.read(&mut response_data);
 
             match res {
-                PollResult::None => (),
-                PollResult::Data(buffer) => {
-                    let slice = buffer.slice();
-                    let written = response_data.push(slice);
-
-                    if response_data.is_full() {
-                        println!(
-                            "filled the buffer ... write {} bytes to {:x}",
-                            response_data.slice().len(),
-                            flash_addr
-                        );
-
-                        ota.write(flash_addr, response_data.slice()).unwrap();
-                        flash_addr += 4096;
-                        response_data.clear();
-                    }
-
-                    if written != slice.len() {
-                        let buffer = buffer.split_right(written);
-
-                        // let's hope our buffer is large enough
-                        response_data.push(buffer.slice());
+                Ok(len) => {
+                    if len > 0 {
+                        print!(".");
+                        ota.write(flash_addr, &response_data[..len]).unwrap();
+                        flash_addr += len as u32;
                     }
                 }
-                PollResult::Done => {
-                    response.finalize();
-                    break;
-                }
-                PollResult::Err => {
-                    println!("Ooops some error occured!");
-                }
+                Err(_) => break,
             }
         }
-
-        // write the remainder - make sure to align to 4 bytes
-        println!(
-            "last sector to write ... write {} bytes to {:x}",
-            response_data.slice().len(),
-            flash_addr
-        );
-        ota.write(flash_addr, response_data.slice()).unwrap();
+        println!("Flashing done");
 
         println!("Setting the new OTA slot to {:?}", new_slot);
         ota.set_current_slot(new_slot);
     }
+
+    ota.free();
 
     println!(
         "All done - going idle now - manually reset to boot into the (might be) newly installed firmware"
@@ -216,35 +180,6 @@ fn main() -> ! {
     loop {}
 }
 
-pub fn current_millis() -> u32 {
-    (esp_wifi::timer::get_systimer_count() * 1000 / esp_wifi::timer::TICKS_PER_SECOND) as u32
-}
-
-pub fn wait_ms(ms: u32) {
-    let started = current_millis();
-    while current_millis() < started + ms {
-        // nothing
-    }
-}
-
-pub fn init_logger() {
-    unsafe {
-        log::set_logger_racy(&LOGGER).unwrap();
-        log::set_max_level(log::LevelFilter::Info);
-    }
-}
-
-static LOGGER: SimpleLogger = SimpleLogger;
-struct SimpleLogger;
-
-impl log::Log for SimpleLogger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        true
-    }
-
-    fn log(&self, record: &log::Record) {
-        println!("{} - {}", record.level(), record.args());
-    }
-
-    fn flush(&self) {}
+pub fn current_millis() -> u64 {
+    esp_wifi::timer::get_systimer_count() * 1000 / esp_wifi::timer::TICKS_PER_SECOND
 }
