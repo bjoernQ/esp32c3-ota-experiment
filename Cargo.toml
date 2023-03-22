@@ -20,3 +20,5 @@ embedded-storage = "0.3.0"
 crc = "3.0.0"
 embedded-io = "0.4.0"
 heapless = "0.7.16"
+
+partitions-macro = { path = "./partitions-macro" }

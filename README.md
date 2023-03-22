@@ -11,7 +11,7 @@ Most things are hard-coded (i.e. the adresses of the ota partition and the ota s
 First set the ENV variables `SSID` and `PASSWORD` to match the settings of your WiFi access point.
 Your PC needs to be connected to the same access point.
 
-Change the address of your computer in `main.rs` as needed. (`HOST`)
+Set the address of your computer in as ENV variable `HOST_IP`(e.g. "192.168.2.125")
 
 Make sure you have installed [devserver](https://crates.io/crates/devserver)
 

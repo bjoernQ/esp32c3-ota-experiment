@@ -25,6 +25,24 @@ pub enum Slot {
     Slot1,
 }
 
+impl Slot {
+    pub fn number(&self) -> usize {
+        match self {
+            Slot::None => 0,
+            Slot::Slot0 => 0,
+            Slot::Slot1 => 1,
+        }
+    }
+
+    pub fn next(&self) -> Slot {
+        match self {
+            Slot::None => Slot::Slot0,
+            Slot::Slot0 => Slot::Slot1,
+            Slot::Slot1 => Slot::Slot0,
+        }
+    }
+}
+
 impl<'a> Ota<'a> {
     pub fn new(flash: &'a mut FlashStorage) -> Ota<'a> {
         Ota { flash }

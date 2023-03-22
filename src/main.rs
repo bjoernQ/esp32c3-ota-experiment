@@ -18,11 +18,12 @@ use esp_wifi::wifi_interface::WifiStack;
 use esp_backtrace as _;
 use smoltcp::wire::Ipv4Address;
 
-use crate::ota::Slot;
 use crate::tiny_http::HttpClient;
 use embedded_io::blocking::Read;
 
 use smoltcp::iface::SocketStorage;
+
+use partitions_macro::partition_offset;
 
 mod ota;
 mod tiny_http;
@@ -33,6 +34,10 @@ const PORT: u16 = 8080;
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 const HOST_IP: &str = env!("HOST_IP");
+
+const OTA_0_OFFSET: u32 = partition_offset!("ota_0");
+const OTA_1_OFFSET: u32 = partition_offset!("ota_1");
+const OTA_OFFSETS: [u32; 2] = [OTA_0_OFFSET, OTA_1_OFFSET];
 
 #[entry]
 fn main() -> ! {
@@ -90,7 +95,7 @@ fn main() -> ! {
         wifi_stack.work();
 
         if wifi_stack.is_iface_up() {
-            println!("got ip {:?}", wifi_stack.get_ip_info());
+            println!("Got ip {:?}", wifi_stack.get_ip_info());
             break;
         }
     }
@@ -103,11 +108,7 @@ fn main() -> ! {
     let current_slot = ota.current_slot();
     println!("Current Slot: {:?}", current_slot);
 
-    let new_slot = if current_slot == Slot::None || current_slot == Slot::Slot1 {
-        Slot::Slot0
-    } else {
-        Slot::Slot1
-    };
+    let new_slot = current_slot.next();
 
     let mut rx_buffer = [0u8; 1536];
     let mut tx_buffer = [0u8; 1536];
@@ -136,11 +137,7 @@ fn main() -> ! {
     if version > THIS_VERSION {
         println!("Going to update");
 
-        let mut flash_addr = if new_slot == Slot::Slot0 {
-            0x110000
-        } else {
-            0x210000
-        };
+        let mut flash_addr = OTA_OFFSETS[new_slot.number()];
 
         // do the update
         socket.open(parse_ip(HOST_IP), PORT).unwrap();
@@ -165,6 +162,7 @@ fn main() -> ! {
                 Err(_) => break,
             }
         }
+        println!();
         println!("Flashing done");
 
         println!("Setting the new OTA slot to {:?}", new_slot);
