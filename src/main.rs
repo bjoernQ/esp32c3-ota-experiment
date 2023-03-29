@@ -45,7 +45,7 @@ fn main() -> ! {
     esp_wifi::init_heap();
 
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let mut system = peripherals.SYSTEM.split();
     let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock160MHz).freeze();
 
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
@@ -54,14 +54,21 @@ fn main() -> ! {
     rtc.swd.disable();
     rtc.rwdt.disable();
 
+    let (wifi, _) = peripherals.RADIO.split();
     let mut socket_set_entries: [SocketStorage; 3] = Default::default();
     let (iface, device, mut controller, sockets) =
-        create_network_interface(WifiMode::Sta, &mut socket_set_entries);
+        create_network_interface(wifi, WifiMode::Sta, &mut socket_set_entries);
     let wifi_stack = WifiStack::new(iface, device, sockets, current_millis);
 
     use esp32c3_hal::systimer::SystemTimer;
     let syst = SystemTimer::new(peripherals.SYSTIMER);
-    esp_wifi::initialize(syst.alarm0, Rng::new(peripherals.RNG), &clocks).unwrap();
+    esp_wifi::initialize(
+        syst.alarm0,
+        Rng::new(peripherals.RNG),
+        system.radio_clock_control,
+        &clocks,
+    )
+    .unwrap();
 
     println!("Call wifi_connect");
     let client_config = Configuration::Client(ClientConfiguration {
