@@ -1,13 +1,12 @@
-[target.riscv32imac-unknown-none-elf]
+[target.xtensa-esp32-none-elf]
 runner = "espflash flash --bootloader bootloader.bin --partition-table partitions.csv --monitor"
 
 [build]
 rustflags = [
   "-C", "link-arg=-Tlinkall.x",
   "-C", "link-arg=-Trom_functions.x",
-  "-C", "force-frame-pointers",
 ]
-target = "riscv32imac-unknown-none-elf"
+target = "xtensa-esp32-none-elf"
 
 [unstable]
 build-std = ["core", "alloc"]

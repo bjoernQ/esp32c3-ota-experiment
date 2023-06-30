@@ -5,10 +5,11 @@ use core::str::from_utf8;
 
 use embedded_svc::ipv4::Interface;
 use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
-use esp32c3_hal::clock::{ClockControl, CpuClock};
-use esp32c3_hal::peripherals::Peripherals;
-use esp32c3_hal::Rtc;
-use esp32c3_hal::{prelude::*, Rng};
+use esp32_hal::clock::{ClockControl, CpuClock};
+use esp32_hal::peripherals::Peripherals;
+use esp32_hal::timer::TimerGroup;
+use esp32_hal::Rtc;
+use esp32_hal::{prelude::*, Rng};
 use esp_println::logger::init_logger;
 use esp_println::{print, println};
 use esp_wifi::wifi::utils::create_network_interface;
@@ -28,7 +29,7 @@ use partitions_macro::partition_offset;
 mod ota;
 mod tiny_http;
 
-const THIS_VERSION: u32 = 1;
+const THIS_VERSION: u32 = 2;
 const PORT: u16 = 8080;
 
 const SSID: &str = env!("SSID");
@@ -45,23 +46,28 @@ fn main() -> ! {
     esp_wifi::init_heap();
 
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
-    let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock160MHz).freeze();
+    let system = peripherals.DPORT.split();
+    let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock240MHz).freeze();
 
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
 
     // Disable watchdog timers
-    rtc.swd.disable();
     rtc.rwdt.disable();
+
+    println!("OTA offsets {:x?}", OTA_OFFSETS);
 
     let mut socket_set_entries: [SocketStorage; 3] = Default::default();
     let (iface, device, mut controller, sockets) =
         create_network_interface(WifiMode::Sta, &mut socket_set_entries);
     let wifi_stack = WifiStack::new(iface, device, sockets, current_millis);
 
-    use esp32c3_hal::systimer::SystemTimer;
-    let syst = SystemTimer::new(peripherals.SYSTIMER);
-    esp_wifi::initialize(syst.alarm0, Rng::new(peripherals.RNG), &clocks).unwrap();
+    let timer_group1 = TimerGroup::new(peripherals.TIMG1, &clocks);
+    esp_wifi::initialize(
+        timer_group1.timer0,
+        Rng::new(peripherals.RNG),
+        &clocks,
+    )
+    .unwrap();
 
     println!("Call wifi_connect");
     let client_config = Configuration::Client(ClientConfiguration {

@@ -1,8 +1,8 @@
-# ESP32C3 Bare Metal OTA Experiment
+# ESP32 Bare Metal OTA Experiment
 
 ## About
 
-This is an experiment to do an OTA update on ESP32-C3 in bare-metal.
+This is an experiment to do an OTA update on ESP32 in bare-metal.
 
 Most things are hard-coded (i.e. the adresses of the ota partition and the ota slots).
 
@@ -18,8 +18,8 @@ Make sure you have installed [devserver](https://crates.io/crates/devserver)
 Change `THIS_VERSION` in `main.rs` to `2`. Compile the application via `cargo build --release`.
 
 Perform these steps
-- `esptool --chip esp32c3 elf2image target\riscv32imac-unknown-none-elf\release\esp32c3_ota_experiment`
-- `cp target\riscv32imac-unknown-none-elf\release\esp32c3_ota_experiment.bin firmware.bin`
+- `esptool --chip esp32 elf2image target\xtensa-esp32-none-elf\release\esp32_ota_experiment`
+- `cp target\xtensa-esp32-none-elf\release\esp32_ota_experiment.bin firmware.bin`
 
 Change `THIS_VERSION` in `main.rs` back to `1`.
 
@@ -32,7 +32,7 @@ To avoid problems run `esptool erase_flash` first. Now run the application via `
 The application should connect to your PC, pick up `current.txt` and see it's own version (1) is below what is available online (2).
 Now it will download `firmware.bin` and flash it. After that it will set the OTA partition to use.
 
-In this experiment the reset isn't done automatically. Reset the ESP32-C3 and see the new version boot.
+In this experiment the reset isn't done automatically. Reset the ESP32 and see the new version boot.
 The new version will see there is no later version online to flash.
 
 ## Please Note
