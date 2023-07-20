@@ -7,6 +7,7 @@ use embedded_svc::ipv4::Interface;
 use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
 use esp32c3_hal::clock::{ClockControl, CpuClock};
 use esp32c3_hal::peripherals::Peripherals;
+use esp32c3_hal::systimer::SystemTimer;
 use esp32c3_hal::Rtc;
 use esp32c3_hal::{prelude::*, Rng};
 use esp_println::logger::init_logger;
@@ -14,9 +15,10 @@ use esp_println::{print, println};
 use esp_wifi::wifi::utils::create_network_interface;
 use esp_wifi::wifi::WifiMode;
 use esp_wifi::wifi_interface::WifiStack;
+use esp_wifi::EspWifiInitFor;
 
 use esp_backtrace as _;
-use smoltcp::wire::Ipv4Address;
+use smoltcp::wire::{IpAddress, Ipv4Address};
 
 use crate::tiny_http::HttpClient;
 use embedded_io::blocking::Read;
@@ -42,10 +44,9 @@ const OTA_OFFSETS: [u32; 2] = [OTA_0_OFFSET, OTA_1_OFFSET];
 #[entry]
 fn main() -> ! {
     init_logger(log::LevelFilter::Info);
-    esp_wifi::init_heap();
 
     let peripherals = Peripherals::take();
-    let mut system = peripherals.SYSTEM.split();
+    let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock160MHz).freeze();
 
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
@@ -54,21 +55,21 @@ fn main() -> ! {
     rtc.swd.disable();
     rtc.rwdt.disable();
 
-    let (wifi, _) = peripherals.RADIO.split();
-    let mut socket_set_entries: [SocketStorage; 3] = Default::default();
-    let (iface, device, mut controller, sockets) =
-        create_network_interface(wifi, WifiMode::Sta, &mut socket_set_entries);
-    let wifi_stack = WifiStack::new(iface, device, sockets, current_millis);
-
-    use esp32c3_hal::systimer::SystemTimer;
     let syst = SystemTimer::new(peripherals.SYSTIMER);
-    esp_wifi::initialize(
+    let init = esp_wifi::initialize(
+        EspWifiInitFor::Wifi,
         syst.alarm0,
         Rng::new(peripherals.RNG),
         system.radio_clock_control,
         &clocks,
     )
     .unwrap();
+
+    let (wifi, _) = peripherals.RADIO.split();
+    let mut socket_set_entries: [SocketStorage; 3] = Default::default();
+    let (iface, device, mut controller, sockets) =
+        create_network_interface(&init, wifi, WifiMode::Sta, &mut socket_set_entries);
+    let wifi_stack = WifiStack::new(iface, device, sockets, current_millis);
 
     println!("Call wifi_connect");
     let client_config = Configuration::Client(ClientConfiguration {
@@ -120,7 +121,9 @@ fn main() -> ! {
     let mut rx_buffer = [0u8; 1536];
     let mut tx_buffer = [0u8; 1536];
     let mut socket = wifi_stack.get_socket(&mut rx_buffer, &mut tx_buffer);
-    socket.open(parse_ip(HOST_IP), PORT).unwrap();
+    socket
+        .open(IpAddress::Ipv4(parse_ip(HOST_IP)), PORT)
+        .unwrap();
     let mut client = HttpClient::new("localhost", socket);
     let mut response = client
         .get::<0, 0>("/current.txt", None, None::<&[&str; 0]>)
@@ -147,7 +150,9 @@ fn main() -> ! {
         let mut flash_addr = OTA_OFFSETS[new_slot.number()];
 
         // do the update
-        socket.open(parse_ip(HOST_IP), PORT).unwrap();
+        socket
+            .open(IpAddress::Ipv4(parse_ip(HOST_IP)), PORT)
+            .unwrap();
         let mut client = HttpClient::new("localhost", socket);
 
         let mut response = client
